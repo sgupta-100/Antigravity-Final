@@ -2,7 +2,92 @@ import React, { useState, useEffect, useRef } from 'react';
 import Navigation from './Navigation';
 import { motion } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
+import ExplainabilityPanel from './ExplainabilityPanel';
 
+const DEFAULT_V6_METRICS = {
+    injections_blocked: 0,
+    deceptive_ui_blocked: 0,
+    risk_score: 0
+};
+
+function normalizeThreat(rawEvent) {
+    if (!rawEvent) return null;
+
+    const eventType = rawEvent.type;
+    let threat = rawEvent.payload || {};
+
+    if (eventType === 'ATTACK_HIT' || eventType === 'JOB_ASSIGNED') {
+        threat = {
+            timestamp: new Date().toLocaleTimeString(),
+            agent: rawEvent.source || 'agent_beta',
+            threat_type: eventType === 'JOB_ASSIGNED' ? 'JOB DISPATCHED' : 'ATTACK GENERATED',
+            url: rawEvent.payload?.url || rawEvent.payload?.target || (typeof rawEvent.payload === 'string' ? rawEvent.payload.substring(0, 40) : 'System Action'),
+            severity: 'INFO',
+            risk_score: 10
+        };
+    } else if (eventType === 'VULN_CONFIRMED') {
+        threat = {
+            timestamp: new Date().toLocaleTimeString(),
+            agent: rawEvent.source || 'agent_gamma',
+            threat_type: rawEvent.payload?.type || 'VULNERABILITY',
+            url: rawEvent.payload?.id || rawEvent.payload?.url || 'Confirmed Exploit',
+            severity: rawEvent.payload?.severity || 'CRITICAL',
+            risk_score: rawEvent.payload?.risk_score || 95
+        };
+    } else if (eventType === 'LOG') {
+        threat = {
+            timestamp: new Date().toLocaleTimeString(),
+            agent: rawEvent.source || 'system',
+            threat_type: 'SYSTEM LOG',
+            url: typeof rawEvent.payload === 'string' ? rawEvent.payload.substring(0, 60) : 'Log Entry',
+            severity: 'LOW',
+            risk_score: 5
+        };
+    } else if (eventType === 'RECON_PACKET') {
+        threat = {
+            timestamp: new Date().toLocaleTimeString(),
+            agent: 'spy_v2',
+            threat_type: 'TRAFFIC INTERCEPTED',
+            url: rawEvent.payload?.url || 'Unknown Endpoint',
+            severity: 'INFO',
+            risk_score: 15
+        };
+    } else if (eventType === 'KEY_CAPTURE') {
+        threat = {
+            timestamp: new Date().toLocaleTimeString(),
+            agent: 'synapse_v2',
+            threat_type: 'CREDENTIAL LEAK',
+            url: rawEvent.payload?.url || 'Sensitive Header',
+            severity: 'HIGH',
+            risk_score: 85
+        };
+    } else if (eventType === 'LIVE_ATTACK_FEED') {
+        threat = {
+            timestamp: rawEvent.payload?.timestamp || new Date().toLocaleTimeString(),
+            agent: rawEvent.payload?.agent || 'agent_sigma',
+            threat_type: `[ATTACK] ${rawEvent.payload?.arsenal?.toUpperCase() || 'GENERAL'}`,
+            url: rawEvent.payload?.url || 'Target Endpoint',
+            severity: 'HIGH',
+            risk_score: 45,
+            action: rawEvent.payload?.action,
+            payload_data: rawEvent.payload?.payload
+        };
+    }
+
+    const normalizedType = String(threat.threat_type || 'UNKNOWN')
+        .replace(/[\s-]+/g, '_')
+        .replace(/^\[RECON\]_/, '')
+        .toUpperCase();
+
+    return {
+        ...threat,
+        timestamp: threat.timestamp || new Date().toLocaleTimeString(),
+        agent: String(threat.agent || rawEvent.source || 'system'),
+        severity: String(threat.severity || 'LOW').toUpperCase(),
+        risk_score: Number(threat.risk_score || 0),
+        normalized_type: normalizedType
+    };
+}
 
 const Dashboard = ({ navigate }) => {
     const [stats, setStats] = useState({
@@ -34,80 +119,22 @@ const Dashboard = ({ navigate }) => {
             events.forEach(data => {
                 if (data.type === 'VULN_UPDATE') {
                     nextState.metrics = data.payload.metrics || data.payload;
-                    nextState.graph_data = data.payload.history || nextState.graph_data;
+                    nextState.graph_data = data.payload.graph_data || data.payload.history || nextState.graph_data;
                 }
-                else if (['LIVE_THREAT_LOG', 'ATTACK_HIT', 'VULN_CONFIRMED', 'LOG', 'JOB_ASSIGNED', 'RECON_PACKET', 'KEY_CAPTURE'].includes(data.type)) {
+                else if (['LIVE_THREAT_LOG', 'ATTACK_HIT', 'VULN_CONFIRMED', 'LOG', 'JOB_ASSIGNED', 'RECON_PACKET', 'KEY_CAPTURE', 'LIVE_ATTACK_FEED'].includes(data.type)) {
+                    const threat = normalizeThreat(data);
+                    if (!threat) return;
+
                     if (data.type === 'LIVE_THREAT_LOG') {
-                        setLatestThreat(data.payload);
+                        setLatestThreat(threat);
                     }
-                    const defaultV6 = { injections_blocked: 0, deceptive_ui_blocked: 0, risk_score: 0 };
-                    const currentV6 = nextState.v6_metrics || defaultV6;
+
+                    const currentV6 = nextState.v6_metrics || DEFAULT_V6_METRICS;
                     const newMetrics = { ...currentV6 };
 
-                    let threat = data.payload;
-                    if (data.type === 'ATTACK_HIT' || data.type === 'JOB_ASSIGNED') {
-                        threat = {
-                            timestamp: new Date().toLocaleTimeString(),
-                            agent: data.source || 'agent_beta',
-                            threat_type: data.type === 'JOB_ASSIGNED' ? 'JOB DISPATCHED' : 'ATTACK GENERATED',
-                            url: data.payload?.url || data.payload?.target || (typeof data.payload === 'string' ? data.payload.substring(0, 40) : 'System Action'),
-                            severity: 'INFO',
-                            risk_score: 10
-                        };
-                    } else if (data.type === 'VULN_CONFIRMED') {
-                        threat = {
-                            timestamp: new Date().toLocaleTimeString(),
-                            agent: data.source || 'agent_gamma',
-                            threat_type: data.payload?.type || 'VULNERABILITY',
-                            url: data.payload?.id || 'Confirmed Exploit',
-                            severity: data.payload?.severity || 'CRITICAL',
-                            risk_score: 95
-                        };
-                    } else if (data.type === 'LOG') {
-                        threat = {
-                            timestamp: new Date().toLocaleTimeString(),
-                            agent: data.source || 'system',
-                            threat_type: 'SYSTEM LOG',
-                            url: typeof data.payload === 'string' ? data.payload.substring(0, 60) : 'Log Entry',
-                            severity: 'LOW',
-                            risk_score: 5
-                        };
-                    } else if (data.type === 'RECON_PACKET') {
-                        threat = {
-                            timestamp: new Date().toLocaleTimeString(),
-                            agent: 'spy_v2',
-                            threat_type: 'TRAFFIC INTERCEPTED',
-                            url: data.payload?.url || 'Unknown Endpoint',
-                            severity: 'INFO',
-                            risk_score: 15
-                        };
-                    } else if (data.type === 'KEY_CAPTURE') {
-                        threat = {
-                            timestamp: new Date().toLocaleTimeString(),
-                            agent: 'synapse_v2',
-                            threat_type: 'CREDENTIAL LEAK',
-                            url: data.payload?.url || 'Sensitive Header',
-                            severity: 'HIGH',
-                            risk_score: 85
-                        };
-                    }
-
-                    else if (data.type === 'LIVE_ATTACK_FEED') {
-                        threat = {
-                            timestamp: data.payload.timestamp || new Date().toLocaleTimeString(),
-                            agent: data.payload.agent || 'agent_sigma',
-                            threat_type: `[ATTACK] ${data.payload.arsenal?.toUpperCase() || 'GENERAL'}`,
-                            url: data.payload.url || 'Target Endpoint',
-                            severity: 'HIGH',
-                            risk_score: 45,
-                            action: data.payload.action,
-                            payload_data: data.payload.payload
-                        };
-                    }
-
-                    if (['PROMPT_INJECTION', 'INVISIBLE_TEXT', 'HIDDEN_TEXT'].includes(threat.threat_type)) {
+                    if (['PROMPT_INJECTION', 'INVISIBLE_TEXT', 'HIDDEN_TEXT', 'HIDDEN_PROMPT_INJECTION'].includes(threat.normalized_type)) {
                         newMetrics.injections_blocked += 1;
-                    } else if (['DECEPTIVE_UI', 'PHISHING', 'ROACH_MOTEL', 'DARK_PATTERN_BLOCK'].includes(threat.threat_type)) {
+                    } else if (['DECEPTIVE_UI', 'PHISHING', 'ROACH_MOTEL', 'DARK_PATTERN_BLOCK'].includes(threat.normalized_type)) {
                         newMetrics.deceptive_ui_blocked += 1;
                     }
 
@@ -151,30 +178,34 @@ const Dashboard = ({ navigate }) => {
         const interval = setInterval(fetchStats, 5000);
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/stream?client_type=ui`;
+        const wsUrl = `${protocol}//${backendHost}/stream?client_type=ui`;
 
         wsRef.current = new WebSocket(wsUrl);
         wsRef.current.onopen = () => console.log("Dashboard: Connected to Real-time Stream");
 
         wsRef.current.onmessage = (event) => {
             try {
-                const data = JSON.parse(event.data);
-                statsBuffer.current.push(data);
+                const parsed = JSON.parse(event.data);
+                const messages = parsed.type === 'BATCH' && Array.isArray(parsed.payload) ? parsed.payload : [parsed];
 
-                // Auto-download generated PDF report
-                if (data.type === 'GI5_LOG' && data.payload && data.payload.includes('REPORT GENERATED:')) {
-                    const parts = data.payload.split(/\\|\//);
-                    const filename = parts[parts.length - 1];
-                    const url = `http://${backendHost}/api/reports/download/${filename}`;
+                messages.forEach((data) => {
+                    statsBuffer.current.push(data);
 
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.target = '_blank';
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                }
+                    // Auto-download generated PDF report
+                    if (data.type === 'GI5_LOG' && data.payload && data.payload.includes('REPORT GENERATED:')) {
+                        const parts = data.payload.split(/\\|\//);
+                        const filename = parts[parts.length - 1];
+                        const url = `http://${backendHost}/api/reports/download/${filename}`;
+
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.target = '_blank';
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                    }
+                });
 
                 if (!bufferTimer.current) {
                     bufferTimer.current = requestAnimationFrame(() => {
@@ -331,13 +362,13 @@ const Dashboard = ({ navigate }) => {
                     </motion.div>
 
                     {/* Main Content Grid: Live Threat Monitor (Full Width) */}
-                    <div className="grid grid-cols-1 gap-6 h-[400px]">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[400px]">
                         {/* LIVE THREAT MONITOR */}
                         <motion.div
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
                             transition={{ ...LIQUID_SPRING, delay: 0.3 }}
-                            className="glass-panel-dash rounded-2xl p-0 relative overflow-hidden flex flex-col h-full"
+                            className="lg:col-span-2 glass-panel-dash rounded-2xl p-0 relative overflow-hidden flex flex-col h-full"
                         >
                             <div className="p-4 border-b border-white/10 bg-black/20 flex justify-between items-center">
                                 <h3 className="text-sm font-medium text-gray-200 flex items-center gap-2">
@@ -364,18 +395,19 @@ const Dashboard = ({ navigate }) => {
 
                                 {stats.threat_feed && stats.threat_feed.length > 0 ? stats.threat_feed.map((item, idx) => {
                                     // Agent Mapping logic
+                                    const agentId = String(item.agent || '').toLowerCase();
                                     let agentName = "UNKNOWN";
                                     let agentColor = "text-gray-400";
 
-                                    if (item.agent?.includes('theta')) { agentName = "THE SENTINEL"; agentColor = "text-purple-400"; }
-                                    else if (item.agent?.includes('iota')) { agentName = "THE INSPECTOR"; agentColor = "text-orange-400"; }
-                                    else if (item.agent?.includes('beta')) { agentName = "BETA (BREAKER)"; agentColor = "text-red-400"; }
-                                    else if (item.agent?.includes('alpha')) { agentName = "ALPHA (SCOUT)"; agentColor = "text-cyan-400"; }
-                                    else if (item.agent?.includes('gamma')) { agentName = "GAMMA (TYCOON)"; agentColor = "text-yellow-400"; }
-                                    else if (item.agent?.includes('omega')) { agentName = "OMEGA (STRAT)"; agentColor = "text-pink-400"; }
-                                    else if (item.agent?.includes('zeta')) { agentName = "ZETA (CORTEX)"; agentColor = "text-indigo-400"; }
-                                    else if (item.agent?.includes('sigma')) { agentName = "SIGMA (SMITH)"; agentColor = "text-green-400"; }
-                                    else if (item.agent?.includes('kappa')) { agentName = "KAPPA (LIBRARIAN)"; agentColor = "text-teal-400"; }
+                                    if (agentId.includes('theta')) { agentName = "THE SENTINEL"; agentColor = "text-purple-400"; }
+                                    else if (agentId.includes('iota')) { agentName = "THE INSPECTOR"; agentColor = "text-orange-400"; }
+                                    else if (agentId.includes('beta')) { agentName = "BETA (BREAKER)"; agentColor = "text-red-400"; }
+                                    else if (agentId.includes('alpha')) { agentName = "ALPHA (SCOUT)"; agentColor = "text-cyan-400"; }
+                                    else if (agentId.includes('gamma')) { agentName = "GAMMA (TYCOON)"; agentColor = "text-yellow-400"; }
+                                    else if (agentId.includes('omega')) { agentName = "OMEGA (STRAT)"; agentColor = "text-pink-400"; }
+                                    else if (agentId.includes('zeta')) { agentName = "ZETA (CORTEX)"; agentColor = "text-indigo-400"; }
+                                    else if (agentId.includes('sigma')) { agentName = "SIGMA (SMITH)"; agentColor = "text-green-400"; }
+                                    else if (agentId.includes('kappa')) { agentName = "KAPPA (LIBRARIAN)"; agentColor = "text-teal-400"; }
 
                                     return (
                                         <motion.div
@@ -415,6 +447,15 @@ const Dashboard = ({ navigate }) => {
                                     </div>
                                 )}
                             </div>
+                        </motion.div>
+
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ ...LIQUID_SPRING, delay: 0.4 }}
+                            className="lg:col-span-1 h-full"
+                        >
+                            <ExplainabilityPanel latestEvent={latestThreat} />
                         </motion.div>
                     </div>
                 </main>

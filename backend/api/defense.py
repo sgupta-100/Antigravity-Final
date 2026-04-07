@@ -67,9 +67,12 @@ async def analyze_threat(payload: ThreatPayload):
     
     # HYBRID AI: Dynamic risk scoring instead of hardcoded 95/10
     if result.vulnerabilities:
-        context = f"{payload.url} {reason or ''}"
-        risk_assessment = cortex.assess_contextual_risk(context)
-        risk_score = risk_assessment.get("risk_score", 95)
+        risk_score = await cortex.assess_contextual_risk(
+            reason or payload.content.get("threat_type") or "UI_ANOMALY",
+            payload.url,
+            payload.content
+        )
+        risk_score = max(0, min(int(risk_score or 95), 100))
     else:
         risk_score = 10
 

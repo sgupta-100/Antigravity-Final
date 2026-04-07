@@ -83,8 +83,9 @@ const NewScan = ({ navigate }) => {
 
     useEffect(() => {
         // 2. Backend WebSocket Connection
+        const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : '127.0.0.1:8000';
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/stream?client_type=ui`;
+        const wsUrl = `${protocol}//${backendHost}/stream?client_type=ui`;
 
         wsRef.current = new WebSocket(wsUrl);
         wsRef.current.onopen = () => console.log("Connected to Backend Stream");
